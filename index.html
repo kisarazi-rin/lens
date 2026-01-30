@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Galaxy & Stars Gravitational Lens</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #instruction {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.8);
+            font-family: sans-serif;
+            pointer-events: none;
+            text-shadow: 0 0 5px black;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <script id="fs" type="x-shader/x-fragment">
+        precision highp float;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform vec2 u_mouse;
+
+        // --- 乱数生成 ---
+        float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+        }
+
+        float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+
+        float fbm(vec2 p) {
+            float v = 0.0;
+            float amp = 0.5;
+            for (int i = 0; i < 4; i++) {
+                v += amp * noise(p);
+                p *= 2.0;
+                amp *= 0.5;
+            }
+            return v;
+        }
+
+        // --- 星空（背景）を描画する関数 ---
+        vec3 getStars(vec2 uv) {
+            vec3 col = vec3(0.0);
+            
+            // 2層の星屑を作る（遠近感を出すためサイズを変える）
+            
+            // 層1: 小さな星（数が多い）
+            vec2 uv1 = uv * 50.0; 
+            vec2 id1 = floor(uv1);
+            vec2 st1 = fract(uv1) - 0.5;
+            float n1 = hash(id1);
+            if (n1 > 0.95) { // 95%は暗闇、5%が星
+                float brightness = 0.8 - length(st1) * 2.0;
+                col += vec3(max(0.0, brightness)) * n1;
+            }
+
+            // 層2: 明るい星（数が少ない）
+            vec2 uv2 = uv * 15.0; 
+            vec2 id2 = floor(uv2 + 100.0); // オフセット
+            vec2 st2 = fract(uv2) - 0.5;
+            float n2 = hash(id2);
+            if (n2 > 0.98) { 
+                float brightness = 1.0 - length(st2) * 4.0; // シャープに
+                // キラキラさせる
+                float twinkle = sin(u_time * 2.0 + n2 * 10.0) * 0.5 + 0.5;
+                col += vec3(max(0.0, brightness)) * (0.5 + 0.5 * twinkle) * 1.5;
+            }
+            
+            return col;
+        }
+
+        // --- 銀河を描画する関数 ---
+        vec3 getGalaxy(vec2 uv) {
+            float r = length(uv);
+            
+            // 回転
+            float angle = atan(uv.y, uv.x);
+            angle += u_time * 0.1;
+            
+            // 渦巻き形状
+            float spiral = angle * 3.0 + r * 12.0;
+            float arms = cos(spiral) * 0.5 + 0.5;
+            
+            // ガス感
+            float gas = fbm(uv * 3.0 + vec2(u_time * 0.05));
+            
+            // 明るさ計算
+            float brightness = 1.0 / (r * 3.0 + 0.1); 
+            brightness *= arms * gas + 0.3; 
+            brightness *= smoothstep(1.8, 0.4, r); // 外側を暗く
+
+            // 色
+            vec3 centerCol = vec3(1.0, 0.9, 0.7); 
+            vec3 armCol = vec3(0.2, 0.5, 1.0); 
+            vec3 outerCol = vec3(0.6, 0.1, 0.4); 
+            
+            vec3 col = mix(outerCol, armCol, arms);
+            col = mix(col, centerCol, 1.0 / (r * 5.0 + 1.0));
+            
+            return col * brightness * 1.8;
+        }
+
+        void main() {
+            vec2 uv = (gl_FragCoord.xy * 2.0 - u_resolution) / min(u_resolution.x, u_resolution.y);
+            
+            // マウス座標（重力源）
+            vec2 mousePos = (u_mouse.x == 0.0 && u_mouse.y == 0.0) ? vec2(99.0) : (u_mouse * 2.0 - 1.0);
+            // ※初期位置を画面外(99.0)にして、操作するまで歪まないようにしてもよいが、
+            // わかりやすくするために初期位置(0,0)にするか、あえて画面外にするか。
+            // ここではマウス未操作時は影響なしにするため遠くに飛ばしています。
+            if (u_mouse.x == 0.0 && u_mouse.y == 0.0) mousePos = vec2(99.0);
+            
+            // カメラとレイ
+            vec3 ro = vec3(0.0, 0.0, -6.0);
+            vec3 rd = normalize(vec3(uv, 1.0));
+            
+            // 重力レンズ計算
+            vec3 p = ro;
+            vec3 gravityCenter = vec3(mousePos.x * 2.5, -mousePos.y * 2.5 * (u_resolution.y/u_resolution.x) + (u_resolution.y > u_resolution.x ? 0.0 : 0.0), 0.0);
+            
+            // マウス座標補正（アスペクト比対応）
+            gravityCenter = vec3(mousePos.x * 2.5, mousePos.y * 2.5, 0.0);
+
+            // レイマーチング
+            for(int i = 0; i < 30; i++) {
+                vec3 toCenter = gravityCenter - p;
+                float dist = length(toCenter);
+                
+                // 重力（距離の2乗に反比例）
+                float force = 0.08 / (dist * dist + 0.1);
+                
+                // 光を曲げる
+                rd += normalize(toCenter) * force * 0.5;
+                rd = normalize(rd);
+                
+                p += rd * 0.5;
+                if (p.z > 5.0) break;
+            }
+            
+            // 背景UV (歪んだ結果の座標)
+            vec2 bgUV = p.xy * 0.4;
+            
+            // 1. 星空を描画
+            vec3 col = getStars(bgUV);
+            
+            // 2. 銀河を加算合成
+            col += getGalaxy(bgUV);
+            
+            // 3. グリッド（デバッグ用：薄く表示して歪みを強調）
+            // 不要ならコメントアウトしてください
+            float grid = step(0.97, fract(bgUV.x * 5.0)) + step(0.97, fract(bgUV.y * 5.0));
+            col += vec3(0.15) * grid;
+
+            gl_FragColor = vec4(col, 1.0);
+        }
+    </script>
+    
+    <script id="vs" type="x-shader/x-vertex">
+        attribute vec3 position;
+        void main() {
+            gl_Position = vec4(position, 1.0);
+        }
+    </script>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) alert('WebGL not supported');
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return null;
+            return shader;
+        }
+
+        const program = gl.createProgram();
+        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, document.getElementById('vs').text));
+        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, document.getElementById('fs').text));
+        gl.linkProgram(program);
+        gl.useProgram(program);
+
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+        
+        const posLoc = gl.getAttribLocation(program, "position");
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+        const uTime = gl.getUniformLocation(program, "u_time");
+        const uRes = gl.getUniformLocation(program, "u_resolution");
+        const uMouse = gl.getUniformLocation(program, "u_mouse");
+
+        let mx = 0.0, my = 0.0;
+        
+        // マウス座標更新
+        canvas.addEventListener('mousemove', e => {
+            mx = e.clientX / canvas.width;
+            my = 1.0 - e.clientY / canvas.height;
+        });
+
+        // タッチ座標更新
+        canvas.addEventListener('touchmove', e => {
+            e.preventDefault();
+            mx = e.touches[0].clientX / canvas.width;
+            my = 1.0 - e.touches[0].clientY / canvas.height;
+        }, {passive: false});
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function loop(t) {
+            gl.uniform1f(uTime, t * 0.001);
+            gl.uniform2f(uRes, canvas.width, canvas.height);
+            gl.uniform2f(uMouse, mx, my);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
